@@ -1,0 +1,3 @@
+# Dravya AI Engine Dependencies
+# Base requirements will be specified during development phases.
+# DO NOT install packages until explicitly instructed.
