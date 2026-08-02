@@ -1,0 +1,11 @@
+{
+  "is_valid": true,
+  "total_canonical_plants": 200,
+  "total_mappings": 331,
+  "approved_mappings_count": 0,
+  "unreviewed_mappings_count": 101,
+  "needs_review_mappings_count": 230,
+  "rejected_mappings_count": 0,
+  "errors_count": 0,
+  "errors": []
+}
