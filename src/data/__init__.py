@@ -31,6 +31,13 @@ from src.data.dataset_builder import (
     CanonicalDatasetRecord,
     CanonicalDatasetBuilder,
 )
+from src.data.quality_gate import (
+    QualityGateStatus,
+    CheckStatus,
+    CheckResult,
+    QualityGateResult,
+    DatasetQualityGate,
+)
 
 __all__ = [
     "EXTERNAL_DATASET_ROOT",
@@ -56,7 +63,13 @@ __all__ = [
     "SourceReference",
     "CanonicalDatasetRecord",
     "CanonicalDatasetBuilder",
+    "QualityGateStatus",
+    "CheckStatus",
+    "CheckResult",
+    "QualityGateResult",
+    "DatasetQualityGate",
 ]
+
 
 
 
