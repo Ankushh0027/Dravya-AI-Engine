@@ -1,3 +1,9 @@
-# Dravya AI Engine Dependencies
-# Base requirements will be specified during development phases.
-# DO NOT install packages until explicitly instructed.
+# Foundation Dependencies for Dravya AI Engine (Python 3.12)
+numpy==1.26.4
+pandas==2.2.2
+pillow==10.3.0
+pyyaml==6.0.1
+tqdm==4.66.4
+matplotlib==3.8.4
+pytest==8.2.2
+
