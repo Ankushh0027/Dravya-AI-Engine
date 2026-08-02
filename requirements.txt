@@ -7,3 +7,7 @@ tqdm==4.66.4
 matplotlib==3.8.4
 pytest==8.2.2
 
+# Deep Learning Dependencies (CPU-only PyTorch - development machine has no NVIDIA CUDA GPU)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
