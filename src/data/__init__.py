@@ -21,6 +21,11 @@ from src.data.taxonomy import (
 )
 from src.data.taxonomy_validator import TaxonomyValidator
 from src.data.taxonomy_manager import TaxonomyManager
+from src.data.taxonomy_review import (
+    ReviewDecisionAction,
+    ReviewDecision,
+    TaxonomyReviewEngine,
+)
 
 __all__ = [
     "EXTERNAL_DATASET_ROOT",
@@ -40,7 +45,11 @@ __all__ = [
     "generate_canonical_plant_id",
     "TaxonomyValidator",
     "TaxonomyManager",
+    "ReviewDecisionAction",
+    "ReviewDecision",
+    "TaxonomyReviewEngine",
 ]
+
 
 
 
