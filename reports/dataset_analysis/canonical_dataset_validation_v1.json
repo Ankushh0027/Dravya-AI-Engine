@@ -1,0 +1,8 @@
+{
+  "is_valid": true,
+  "status": "BLOCKED",
+  "reason": "NO_APPROVED_MAPPINGS",
+  "total_records": 0,
+  "errors_count": 0,
+  "errors": []
+}

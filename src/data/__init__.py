@@ -26,6 +26,11 @@ from src.data.taxonomy_review import (
     ReviewDecision,
     TaxonomyReviewEngine,
 )
+from src.data.dataset_builder import (
+    SourceReference,
+    CanonicalDatasetRecord,
+    CanonicalDatasetBuilder,
+)
 
 __all__ = [
     "EXTERNAL_DATASET_ROOT",
@@ -48,7 +53,11 @@ __all__ = [
     "ReviewDecisionAction",
     "ReviewDecision",
     "TaxonomyReviewEngine",
+    "SourceReference",
+    "CanonicalDatasetRecord",
+    "CanonicalDatasetBuilder",
 ]
+
 
 
 
