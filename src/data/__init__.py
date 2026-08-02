@@ -12,6 +12,7 @@ from src.data.paths import (
 from src.data.inventory import InventoryScanner
 from src.data.manifest import ManifestGenerator
 from src.data.deduplication import ExactDuplicateDetector, compute_file_sha256
+from src.data.harmonization import ClassHarmonizationAnalyzer, parse_class_name
 
 __all__ = [
     "EXTERNAL_DATASET_ROOT",
@@ -23,5 +24,8 @@ __all__ = [
     "ManifestGenerator",
     "ExactDuplicateDetector",
     "compute_file_sha256",
+    "ClassHarmonizationAnalyzer",
+    "parse_class_name",
 ]
+
 
