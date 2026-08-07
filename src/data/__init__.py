@@ -38,6 +38,15 @@ from src.data.quality_gate import (
     QualityGateResult,
     DatasetQualityGate,
 )
+from src.data.preprocessing import (
+    PreprocessingConfig,
+    ProcessedDatasetRecord,
+    CanonicalPreprocessor,
+)
+from src.data.taxonomy_review_queue import (
+    ReviewQueueItem,
+    TaxonomyReviewQueue,
+)
 
 __all__ = [
     "EXTERNAL_DATASET_ROOT",
@@ -60,6 +69,8 @@ __all__ = [
     "ReviewDecisionAction",
     "ReviewDecision",
     "TaxonomyReviewEngine",
+    "ReviewQueueItem",
+    "TaxonomyReviewQueue",
     "SourceReference",
     "CanonicalDatasetRecord",
     "CanonicalDatasetBuilder",
@@ -68,7 +79,12 @@ __all__ = [
     "CheckResult",
     "QualityGateResult",
     "DatasetQualityGate",
+    "PreprocessingConfig",
+    "ProcessedDatasetRecord",
+    "CanonicalPreprocessor",
 ]
+
+
 
 
 

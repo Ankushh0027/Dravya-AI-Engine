@@ -31,6 +31,7 @@ def main():
     print(f" - Canonical Dataset Manifest JSON:   {artifacts['manifest_json']}")
     print(f" - Canonical Dataset Statistics JSON: {artifacts['statistics_json']}")
     print(f" - Validation Report JSON:            {artifacts['validation_json']}")
+    print(f" - Readiness Report JSON:             {artifacts['readiness_json']}")
 
     if args.validate and not val_report["is_valid"]:
         print("\n[ERROR] Dataset Manifest Validation Failed!")

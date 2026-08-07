@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -8,6 +9,17 @@ from typing import Dict, List, Any, Optional, Tuple
 
 from src.data.taxonomy import CanonicalPlant, TaxonomyMapping, MappingStatus
 from src.data.taxonomy_validator import TaxonomyValidator
+
+def atomic_json_write(filepath: Path, data: Any) -> None:
+    """
+    Safely writes JSON data to a temporary file before atomically replacing the target file.
+    Prevents corrupted or partial file writes upon unexpected process termination.
+    """
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = filepath.with_suffix(filepath.suffix + ".tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    temp_path.replace(filepath)
 
 class ReviewDecisionAction(str, Enum):
     APPROVE = "APPROVE"
@@ -21,8 +33,13 @@ class ReviewDecision:
     reviewer_id: str
     decision: ReviewDecisionAction
     previous_status: MappingStatus
+    decision_id: str = field(default_factory=lambda: f"dec_{uuid.uuid4().hex[:10]}")
     candidate_canonical_plant_id: Optional[str] = None
     approved_canonical_plant_id: Optional[str] = None
+    original_source_dataset: Optional[str] = None
+    original_class_name: Optional[str] = None
+    health_condition: Optional[str] = None
+    new_status: Optional[str] = None
     review_reason: str = ""
     evidence: str = ""
     reviewed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -36,7 +53,8 @@ class ReviewDecision:
 class TaxonomyReviewEngine:
     """
     Production-grade human review engine for taxonomy mappings.
-    Executes audit-logged review decisions (APPROVE, REJECT, NEEDS_REVIEW) with strict validation.
+    Executes audit-logged review decisions (APPROVE, REJECT, NEEDS_REVIEW) with strict validation,
+    append-only history tracking, and atomic state updates.
     """
 
     def __init__(self, version: str = "v1", reports_dir: str = r"C:\Dravya-AI-Engine\reports\dataset_analysis"):
@@ -48,10 +66,22 @@ class TaxonomyReviewEngine:
 
     def load_state(self, taxonomy_json_path: Optional[str] = None, mappings_json_path: Optional[str] = None) -> None:
         """
-        Loads canonical plants and taxonomy mapping review state from reports directory.
+        Loads canonical plants, taxonomy mappings, and audit history from reports directory.
+        Detects and validates history records against malformed entries.
         """
+        self.plants = {}
+        self.mappings = {}
+        self.history = []
+
         tax_path = Path(taxonomy_json_path) if taxonomy_json_path else self.reports_dir / f"canonical_taxonomy_{self.version}.json"
-        map_path = Path(mappings_json_path) if mappings_json_path else self.reports_dir / f"taxonomy_mapping_review_{self.version}.json"
+        
+        if mappings_json_path:
+            map_path = Path(mappings_json_path)
+        else:
+            rev_path = self.reports_dir / f"taxonomy_review_{self.version}.json"
+            init_path = self.reports_dir / f"taxonomy_mapping_review_{self.version}.json"
+            map_path = rev_path if rev_path.exists() else init_path
+
         hist_path = self.reports_dir / f"taxonomy_review_history_{self.version}.json"
 
         if not tax_path.exists():
@@ -70,26 +100,38 @@ class TaxonomyReviewEngine:
         with open(map_path, "r", encoding="utf-8") as f:
             map_data = json.load(f)
             for m_dict in map_data.get("mappings", []):
-                # Convert status string to enum
                 m_dict["mapping_status"] = MappingStatus(m_dict["mapping_status"])
                 mapping = TaxonomyMapping(**m_dict)
                 self.mappings[mapping.mapping_id] = mapping
 
-        # 3. Load Audit History if present
+        # 3. Load Audit History if present, checking for malformed entries
         if hist_path.exists():
             with open(hist_path, "r", encoding="utf-8") as f:
-                hist_data = json.load(f)
-                for h_dict in hist_data.get("history", []):
-                    h_dict["decision"] = ReviewDecisionAction(h_dict["decision"])
-                    h_dict["previous_status"] = MappingStatus(h_dict["previous_status"])
+                try:
+                    hist_data = json.load(f)
+                except Exception as e:
+                    raise ValueError(f"Malformed audit history file '{hist_path}': JSON parse error: {e}")
+
+                history_records = hist_data.get("history", [])
+                for idx, h_dict in enumerate(history_records, 1):
+                    # Check mandatory fields for history integrity
+                    if not isinstance(h_dict, dict) or "mapping_id" not in h_dict or "reviewer_id" not in h_dict or "decision" not in h_dict:
+                        raise ValueError(f"Malformed audit history entry at index {idx}: missing required fields.")
+                    
+                    try:
+                        h_dict["decision"] = ReviewDecisionAction(h_dict["decision"])
+                        h_dict["previous_status"] = MappingStatus(h_dict["previous_status"])
+                    except Exception as e:
+                        raise ValueError(f"Malformed audit history enum at index {idx}: {e}")
+
                     self.history.append(ReviewDecision(**h_dict))
 
     def apply_decision(self, decision: ReviewDecision) -> TaxonomyMapping:
         """
         Applies a review decision (APPROVE, REJECT, NEEDS_REVIEW) with strict validation.
-        Logs decision to history log and updates mapping state.
+        Logs decision to history log and updates mapping state safely.
         """
-        if not decision.reviewer_id or not decision.reviewer_id.strip():
+        if not decision.reviewer_id or not str(decision.reviewer_id).strip():
             raise ValueError("Review decision requires a non-empty reviewer_id.")
 
         reason_or_evidence = (decision.review_reason or decision.evidence or "").strip()
@@ -101,6 +143,12 @@ class TaxonomyReviewEngine:
 
         mapping = self.mappings[decision.mapping_id]
 
+        # Populate decision metadata if missing
+        decision.original_source_dataset = mapping.source_dataset
+        decision.original_class_name = mapping.original_class_name
+        decision.health_condition = mapping.health_condition
+        decision.candidate_canonical_plant_id = mapping.candidate_canonical_plant_id
+
         # Preserve original class name, dataset, and health condition
         orig_class = mapping.original_class_name
         orig_dataset = mapping.source_dataset
@@ -110,7 +158,7 @@ class TaxonomyReviewEngine:
 
         if act == ReviewDecisionAction.APPROVE:
             approved_id = decision.approved_canonical_plant_id or decision.candidate_canonical_plant_id
-            if not approved_id or not approved_id.strip():
+            if not approved_id or not str(approved_id).strip():
                 raise ValueError("APPROVE decision requires a valid non-empty approved_canonical_plant_id.")
 
             if approved_id not in self.plants:
@@ -127,6 +175,7 @@ class TaxonomyReviewEngine:
             mapping.reviewer = decision.reviewer_id
             mapping.reviewed_at = decision.reviewed_at
             mapping.evidence = reason_or_evidence
+            decision.new_status = MappingStatus.APPROVED.value
 
         elif act == ReviewDecisionAction.REJECT:
             mapping.mapping_status = MappingStatus.REJECTED
@@ -134,6 +183,7 @@ class TaxonomyReviewEngine:
             mapping.reviewer = decision.reviewer_id
             mapping.reviewed_at = decision.reviewed_at
             mapping.evidence = reason_or_evidence
+            decision.new_status = MappingStatus.REJECTED.value
 
         elif act == ReviewDecisionAction.NEEDS_REVIEW:
             mapping.mapping_status = MappingStatus.NEEDS_REVIEW
@@ -141,6 +191,7 @@ class TaxonomyReviewEngine:
             mapping.reviewer = decision.reviewer_id
             mapping.reviewed_at = decision.reviewed_at
             mapping.evidence = reason_or_evidence
+            decision.new_status = MappingStatus.NEEDS_REVIEW.value
 
         # Assert preservation invariants
         assert mapping.original_class_name == orig_class, "Original class name was corrupted during review!"
@@ -153,7 +204,8 @@ class TaxonomyReviewEngine:
 
     def export_artifacts(self) -> Dict[str, Path]:
         """
-        Exports latest taxonomy_review_v1.json, taxonomy_review_history_v1.json, and validation report.
+        Exports latest taxonomy_review_v1.json, taxonomy_review_history_v1.json, and validation report
+        using atomic file replacement for crash safety.
         """
         self.reports_dir.mkdir(parents=True, exist_ok=True)
         review_json_path = self.reports_dir / f"taxonomy_review_{self.version}.json"
@@ -163,32 +215,29 @@ class TaxonomyReviewEngine:
         mappings_list = [m.to_dict() for m in self.mappings.values()]
         history_list = [h.to_dict() for h in self.history]
 
-        # 1. Latest Review State JSON
-        with open(review_json_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "taxonomy_version": self.version,
-                "exported_at": datetime.now(timezone.utc).isoformat(),
-                "total_mappings": len(mappings_list),
-                "unreviewed_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.UNREVIEWED),
-                "needs_review_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.NEEDS_REVIEW),
-                "approved_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.APPROVED),
-                "rejected_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.REJECTED),
-                "mappings": mappings_list
-            }, f, indent=2, ensure_ascii=False)
+        # 1. Latest Review State JSON (Atomic)
+        atomic_json_write(review_json_path, {
+            "taxonomy_version": self.version,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "total_mappings": len(mappings_list),
+            "unreviewed_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.UNREVIEWED),
+            "needs_review_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.NEEDS_REVIEW),
+            "approved_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.APPROVED),
+            "rejected_count": sum(1 for m in self.mappings.values() if m.mapping_status == MappingStatus.REJECTED),
+            "mappings": mappings_list
+        })
 
-        # 2. Append-Only History Log JSON
-        with open(history_json_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "taxonomy_version": self.version,
-                "exported_at": datetime.now(timezone.utc).isoformat(),
-                "history_records_count": len(history_list),
-                "history": history_list
-            }, f, indent=2, ensure_ascii=False)
+        # 2. Append-Only History Log JSON (Atomic)
+        atomic_json_write(history_json_path, {
+            "taxonomy_version": self.version,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "history_records_count": len(history_list),
+            "history": history_list
+        })
 
-        # 3. System Validation Report
+        # 3. System Validation Report (Atomic)
         val_report = TaxonomyValidator.validate_full_system(list(self.plants.values()), list(self.mappings.values()))
-        with open(val_json_path, "w", encoding="utf-8") as f:
-            json.dump(val_report, f, indent=2, ensure_ascii=False)
+        atomic_json_write(val_json_path, val_report)
 
         return {
             "review_json": review_json_path,

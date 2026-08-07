@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional, Set, Tuple
 from src.data.paths import DATASET_PATHS, SUPPORTED_IMAGE_EXTENSIONS
 from src.data.deduplication import compute_file_sha256
 from src.data.taxonomy import CanonicalPlant, TaxonomyMapping, MappingStatus
+from src.data.taxonomy_review import atomic_json_write
 
 @dataclass
 class SourceReference:
@@ -41,8 +42,8 @@ class CanonicalDatasetRecord:
 class CanonicalDatasetBuilder:
     """
     Manifest-First Canonical Dataset Builder for Dravya AI.
-    Generates audit-traceable dataset manifests and statistics from APPROVED taxonomy mappings
-    without modifying or copying raw dataset files.
+    Generates audit-traceable dataset manifests, readiness reports, and statistics from
+    APPROVED taxonomy mappings without modifying or copying raw dataset files.
     """
 
     def __init__(self, version: str = "v1", reports_dir: str = r"C:\Dravya-AI-Engine\reports\dataset_analysis", dataset_roots: Optional[Dict[str, Path]] = None):
@@ -59,9 +60,11 @@ class CanonicalDatasetBuilder:
         """
         Loads canonical plants and review mappings from reports directory.
         """
+        self.plants = {}
+        self.mappings = []
+
         tax_path = Path(taxonomy_json_path) if taxonomy_json_path else self.reports_dir / f"canonical_taxonomy_{self.version}.json"
         
-        # Try loading taxonomy_review_v1.json first, fall back to taxonomy_mapping_review_v1.json
         if mapping_json_path:
             map_path = Path(mapping_json_path)
         else:
@@ -89,7 +92,7 @@ class CanonicalDatasetBuilder:
 
     def build_manifest(self, precomputed_hashes: Optional[Dict[str, str]] = None) -> Tuple[List[CanonicalDatasetRecord], Dict[str, Any]]:
         """
-        Filters APPROVED mappings and builds the canonical dataset records with duplicate SHA-256 consolidation.
+        Filters APPROVED mappings and builds canonical dataset records with duplicate SHA-256 consolidation.
         """
         approved_mappings = [m for m in self.mappings if m.mapping_status == MappingStatus.APPROVED]
 
@@ -124,7 +127,6 @@ class CanonicalDatasetBuilder:
             }
             return self.records, self.statistics
 
-        # If approved mappings exist, scan approved source folders
         sha_to_record: Dict[str, CanonicalDatasetRecord] = {}
         raw_files_count = 0
 
@@ -152,7 +154,6 @@ class CanonicalDatasetBuilder:
                     file_path = Path(root) / fname
                     rel_path_str = str(file_path)
 
-                    # Get SHA-256 digest
                     if precomputed_hashes and rel_path_str in precomputed_hashes:
                         file_sha = precomputed_hashes[rel_path_str]
                     else:
@@ -166,9 +167,7 @@ class CanonicalDatasetBuilder:
                     )
 
                     if file_sha in sha_to_record:
-                        # Append source reference to existing canonical record
                         existing_rec = sha_to_record[file_sha]
-                        # Avoid exact duplicate source references
                         if src_ref not in existing_rec.source_references:
                             existing_rec.source_references.append(src_ref)
                     else:
@@ -188,7 +187,6 @@ class CanonicalDatasetBuilder:
 
         self.records = list(sha_to_record.values())
 
-        # Calculate Statistics
         per_plant: Dict[str, int] = {}
         per_source: Dict[str, int] = {}
         healthy_cnt = 0
@@ -224,9 +222,54 @@ class CanonicalDatasetBuilder:
             "per_source_counts": per_source
         }
 
-        # Run Validation
         self.validation_report = self.validate_manifest()
         return self.records, self.statistics
+
+    def generate_readiness_report(self) -> Dict[str, Any]:
+        """
+        Generates a dry-run readiness report describing the builder state and what WOULD be built.
+        Exports artifact to reports/dataset_analysis/canonical_dataset_readiness_v1.json.
+        """
+        app_count = sum(1 for m in self.mappings if m.mapping_status == MappingStatus.APPROVED)
+        unrev_count = sum(1 for m in self.mappings if m.mapping_status == MappingStatus.UNREVIEWED)
+        needs_count = sum(1 for m in self.mappings if m.mapping_status == MappingStatus.NEEDS_REVIEW)
+        rej_count = sum(1 for m in self.mappings if m.mapping_status == MappingStatus.REJECTED)
+
+        readiness_status = "BLOCKED" if app_count == 0 else "READY"
+        status_reason = "NO_APPROVED_MAPPINGS" if app_count == 0 else "APPROVED_MAPPINGS_AVAILABLE"
+
+        report = {
+            "taxonomy_version": self.version,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "builder_readiness_status": readiness_status,
+            "status_reason": status_reason,
+            "total_mappings": len(self.mappings),
+            "approved_mappings": app_count,
+            "unreviewed_mappings": unrev_count,
+            "needs_review_mappings": needs_count,
+            "rejected_mappings": rej_count,
+            "excluded_mappings_by_status": {
+                "UNREVIEWED": unrev_count,
+                "NEEDS_REVIEW": needs_count,
+                "REJECTED": rej_count
+            },
+            "eligible_canonical_records": self.statistics.get("total_canonical_records", 0),
+            "source_files_would_be_included": self.statistics.get("raw_files_scanned", 0),
+            "sha256_duplicate_groups_would_be_consolidated": self.statistics.get("duplicate_consolidation_count", 0),
+            "canonical_plants_represented": self.statistics.get("total_canonical_plants", 0),
+            "health_condition_distribution": {
+                "Healthy": self.statistics.get("healthy_count", 0),
+                "Unhealthy": self.statistics.get("unhealthy_count", 0),
+                "Unknown": self.statistics.get("unknown_condition_count", 0)
+            },
+            "missing_source_files_count": self.validation_report.get("errors_count", 0),
+            "sha256_mismatch_risks_count": sum(1 for err in self.validation_report.get("errors", []) if "SHA-256 mismatch" in err),
+            "invalid_canonical_ids_count": sum(1 for err in self.validation_report.get("errors", []) if "unknown canonical_plant_id" in err)
+        }
+
+        readiness_path = self.reports_dir / f"canonical_dataset_readiness_{self.version}.json"
+        atomic_json_write(readiness_path, report)
+        return report
 
     def validate_manifest(self) -> Dict[str, Any]:
         """
@@ -245,20 +288,16 @@ class CanonicalDatasetBuilder:
 
         seen_shas = set()
         for r in self.records:
-            # 1. Duplicate record check
             if r.sha256 in seen_shas:
                 errors.append(f"Duplicate canonical record for SHA-256: {r.sha256}")
             seen_shas.add(r.sha256)
 
-            # 2. Canonical plant ID check
             if r.canonical_plant_id not in self.plants:
                 errors.append(f"Record '{r.record_id}' references unknown canonical_plant_id: '{r.canonical_plant_id}'")
 
-            # 3. Provenance check
             if not r.source_references or len(r.source_references) == 0:
                 errors.append(f"Record '{r.record_id}' has missing source references.")
 
-            # 4. Source file, SHA-256 match, and health condition check
             for s in r.source_references:
                 sp = Path(s.source_file_path)
                 if not sp.exists():
@@ -267,7 +306,6 @@ class CanonicalDatasetBuilder:
                     actual_sha = compute_file_sha256(sp)
                     if actual_sha != r.sha256:
                         errors.append(f"Record '{r.record_id}' SHA-256 mismatch for file '{s.source_file_path}': expected {r.sha256}, got {actual_sha}")
-
 
         return {
             "is_valid": len(errors) == 0,
@@ -279,43 +317,44 @@ class CanonicalDatasetBuilder:
 
     def export_artifacts(self) -> Dict[str, Path]:
         """
-        Exports versioned canonical_dataset_manifest_v1.json, statistics, and validation report.
+        Exports versioned canonical_dataset_manifest_v1.json, statistics, validation, and readiness reports using atomic writes.
         """
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
         manifest_path = self.reports_dir / f"canonical_dataset_manifest_{self.version}.json"
         stats_path = self.reports_dir / f"canonical_dataset_statistics_{self.version}.json"
         val_path = self.reports_dir / f"canonical_dataset_validation_{self.version}.json"
+        readiness_path = self.reports_dir / f"canonical_dataset_readiness_{self.version}.json"
 
         recs_list = [r.to_dict() for r in self.records]
 
-        # 1. Manifest JSON
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "taxonomy_version": self.version,
-                "exported_at": datetime.now(timezone.utc).isoformat(),
-                "status": self.statistics.get("status", "BLOCKED"),
-                "reason": self.statistics.get("reason", "NO_APPROVED_MAPPINGS"),
-                "total_records": len(recs_list),
-                "records": recs_list
-            }, f, indent=2, ensure_ascii=False)
+        # 1. Manifest JSON (Atomic)
+        atomic_json_write(manifest_path, {
+            "taxonomy_version": self.version,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "status": self.statistics.get("status", "BLOCKED"),
+            "reason": self.statistics.get("reason", "NO_APPROVED_MAPPINGS"),
+            "total_records": len(recs_list),
+            "records": recs_list
+        })
 
-        # 2. Statistics JSON
-        with open(stats_path, "w", encoding="utf-8") as f:
-            json.dump(self.statistics, f, indent=2, ensure_ascii=False)
+        # 2. Statistics JSON (Atomic)
+        atomic_json_write(stats_path, self.statistics)
 
-        # 3. Validation JSON
-        with open(val_path, "w", encoding="utf-8") as f:
-            json.dump(self.validation_report, f, indent=2, ensure_ascii=False)
+        # 3. Validation JSON (Atomic)
+        atomic_json_write(val_path, self.validation_report)
+
+        # 4. Readiness Report JSON (Atomic)
+        self.generate_readiness_report()
 
         return {
             "manifest_json": manifest_path,
             "statistics_json": stats_path,
-            "validation_json": val_path
+            "validation_json": val_path,
+            "readiness_json": readiness_path
         }
 
     def format_terminal_summary(self) -> str:
-
         s = self.statistics
         val = self.validation_report
         lines = [

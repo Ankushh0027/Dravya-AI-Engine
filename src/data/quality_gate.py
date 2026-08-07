@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Set, Tuple
 
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 from src.data.paths import DATASET_PATHS, SUPPORTED_IMAGE_EXTENSIONS
 from src.data.deduplication import compute_file_sha256
